@@ -1,0 +1,566 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Map Search App</title>
+  <script src="{{api_url}}"></script>
+  <script src="../static/markercluster-1.1.js"></script>
+  <script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
+  <style>
+    body, html {
+      margin: 0;
+      padding: 0;
+      height: 100%;
+      font-family: 'Roboto', sans-serif;
+      background-color: #f4f4f9;
+    }
+    main {
+      height: 100%;
+      width: 100%;
+      position: relative;
+    }
+    #Map {
+      height: 100%;
+      width: 100%;
+      position: absolute;
+      top: 0;
+      left: 0;
+    }
+    #results {
+      width: 25%;
+      max-width: 350px;
+      max-height: 95%;
+      overflow-y: auto;
+      padding: 15px;
+      box-sizing: border-box;
+      background-color: #fff;
+      box-shadow: 0 0 10px rgba(0,0,0,0.1);
+      position: absolute;
+      top: 35px;
+      right: 0px;
+      z-index: 2;
+      border-radius: 8px;
+      display: none;
+      transition: max-height 0.3s, width 0.3s;
+    }
+    #searchBox {
+      display: flex;
+      padding: 10px;
+      box-sizing: border-box;
+      position: absolute;
+      top: 0px;
+      left: 0px;
+      z-index: 2;
+      border-radius: 8px;
+    }
+    #queryinput {
+      flex-grow: 1;
+      padding: 10px;
+      margin-right: 5px;
+      border: 1px solid #ccc;
+      border-radius: 4px;
+      font-size: 16px;
+    }
+    #searchBtn {
+      padding: 10px;
+      background-color: #4CAF50;
+      color: white;
+      border: none;
+      border-radius: 4px;
+      cursor: pointer;
+      transition: background-color 0.3s;
+      font-size: 16px;
+    }
+    #searchBtn:hover {
+      background-color: #45a049;
+    }
+    #resultsList {
+      margin: 0;
+      padding: 0;
+      list-style: none;
+    }
+    #resultsList h2 {
+      text-align: center;
+    }
+    #resultsList li {
+      padding: 10px;
+      border-bottom: 1px solid #f1f1f1;
+      cursor: pointer;
+      transition: background-color 0.3s;
+    }
+    #resultsList li:hover {
+      background-color: #f1f1f1;
+    }
+    #toggle {
+      position: absolute;
+      top: 10px;
+      right: 0px;
+      width: 150px;
+      padding: 5px 10px;
+      background-color: #4CAF50;
+      color: white;
+      border: none;
+      border-radius: 4px;
+      cursor: pointer;
+      display: none;
+      transition: background-color 0.3s;
+      z-index: 3;
+    }
+    #toggle:hover {
+      background-color: #45a049;
+    }
+    @media screen and (max-width: 768px) {
+      #results {
+        width: 100%;
+        max-height: 95vh;
+        top: 35px;
+        right: 0px;
+      }
+      #toggle {
+        top: 10px;
+        right: 10px;
+      }
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <div id="Map" style="width: 100%; font-size: large; font-weight: bold;"></div>
+    <div id="searchBox">
+      <input type="text" id="queryinput" placeholder="Search...">
+      <button id="searchBtn">Search</button>
+    </div>
+    <button id="toggle">▲Results (0)</button>
+    <div id="results">
+      <ul id="resultsList"></ul>      
+    </div>
+  </main>
+  <script type="text/javascript">
+      const resultsDiv = document.getElementById('results');
+      const toggleBtn = document.getElementById('toggle');
+      const resultsList = document.getElementById('resultsList');
+      let allResults = [];
+      let displayCount = 10;
+      let totalResults = 0;
+      let loading = false;
+      let center_lat, center_lon;
+      let map, markers = [];
+      let markerCluster = null;
+      let currentZoom = 9;
+      let activeMarker = null;
+      let debounceTimer;
+      let isMarkersLoading = false;
+      const MARKER_BATCH_SIZE = 100;
+      const MARKER_BATCH_DELAY = 50;
+      
+      // Get stored location or default to Tokyo
+      let mapState;
+      try {
+          mapState = JSON.parse(localStorage.getItem('mapState')) || {
+              lat: 35.6895,
+              lon: 139.6917,
+              zoom: 9
+          };
+          currentZoom = mapState.zoom;
+      } catch (e) {
+          console.error('Error parsing stored map state:', e);
+          mapState = {
+              lat: 35.6895,
+              lon: 139.6917,
+              zoom: 9
+          };
+      }
+
+      function loadMap() {
+          if (typeof ZDC === 'undefined') {
+              console.error("ZDC API failed to load.");
+              alert("地図の読み込みに失敗しました。ページを更新してください。");
+              return;
+          }
+
+          try {
+              console.log(`Loading map at: ${mapState.lat}, ${mapState.lon}, zoom: ${mapState.zoom}`);
+              
+              // Initialize map with stored position and zoom
+              const latlon = new ZDC.LatLon(mapState.lat, mapState.lon);
+              map = new ZDC.Map(document.getElementById('Map'), {
+                  zoom: mapState.zoom,
+                  mapType: ZDC.MAPTYPE_HIGHRES_LV18,
+                  latlon: latlon
+              });
+
+              // Add widgets
+              map.addWidget(new ZDC.ScaleBar());
+              map.addWidget(new ZDC.Control({ pos: { left: 10, bottom: 20 }, close: true }));
+              function updateCenter() {
+                const latlon = map.getLatLon();
+                center_lat = latlon.lat;
+                center_lon = latlon.lon;
+              }
+              updateCenter();
+              // Store map center when it changes
+              function saveMapState() {
+                  try {
+                      const latlon = map.getLatLon();
+                      const zoom = map.getZoom();
+                      center_lat = latlon.lat;
+                      center_lon = latlon.lon;
+                      
+                      mapState = {
+                          lat: latlon.lat,
+                          lon: latlon.lon,
+                          zoom: zoom
+                      };
+                      
+                      localStorage.setItem('mapState', JSON.stringify(mapState));
+                      // console.log('Map state saved:', mapState);
+                  } catch (e) {
+                      console.error('Error saving map state:', e);
+                  }
+              }
+          } catch (e) {
+              console.error('Error initializing map:', e);
+              alert("地図の初期化に失敗しました。ページを更新してください。");
+          }
+      }
+
+      function clearMarkers() {
+          if (markerCluster) {
+              markerCluster.clearMarkers();
+              markerCluster = null;
+          }
+          markers.forEach(marker => map.removeWidget(marker));
+          markers = [];
+          activeMarker = null;
+      }
+
+      function createCluster() {
+          if (markerCluster) {
+              markerCluster.clearMarkers();
+          }
+
+          // Add all markers to the map first
+          markers.forEach(marker => map.addWidget(marker));
+
+          const clusterConfig = {
+              markers: markers,
+              maxZoom: 18,
+              radius: 100,  // Fixed radius for better visibility
+              gridSize: calculateGridSize(),
+              minClusterSize: 2,
+              maxClusterSize: 100000,
+              clusterStyle: {
+                  color: "#ff0000",
+                  opacity: 0.8,
+                  fillColor: "#ff0000",
+                  fillOpacity: 0.4
+              },
+              // Add click handler for clusters
+              onClusterClick: function(cluster) {
+                  const bounds = cluster.getBounds();
+                  map.setLatLonBounds(bounds);
+              }
+          };
+
+          markerCluster = new ZDC.MarkerCluster(map, clusterConfig);
+      }
+
+      // Calculate grid size based on zoom level
+      function calculateGridSize() {
+          const zoom = map.getZoom();
+          // Adjust these values based on your needs
+          return Math.max(30, 100 / Math.pow(1.2, zoom - 5));
+      }
+
+      function addMarkersGradually(points, startIndex = 0) {
+          if (isMarkersLoading || startIndex >= points.length) {
+              if (markers.length > 0) {
+                  createCluster();
+              }
+              isMarkersLoading = false;
+              return;
+          }
+
+          isMarkersLoading = true;
+          const endIndex = Math.min(startIndex + MARKER_BATCH_SIZE, points.length);
+          
+          for (let i = startIndex; i < endIndex; i++) {
+              const point = points[i];
+              const marker = new ZDC.Marker(
+                  new ZDC.LatLon(point.latitude, point.longitude),
+                  {
+                      label: point.name,
+                      labelColor: "#000000",
+                      fontSize: 12,
+                      opacity: 0.8,
+                      cursor: 'pointer'  // Add pointer cursor
+                  }
+              );
+
+              marker.onclick = function() {
+                  if (activeMarker === marker) {
+                      marker.setOptions({ 
+                          labelColor: "#000000",
+                          color: "#0000ff"
+                      });
+                      activeMarker = null;
+                  } else {
+                      if (activeMarker) {
+                          activeMarker.setOptions({ 
+                              labelColor: "#000000",
+                              color: "#0000ff"
+                          });
+                      }
+                      marker.setOptions({ 
+                          labelColor: "#ff0000",
+                          color: "#ff0000"
+                      });
+                      activeMarker = marker;
+
+                      // Find and highlight corresponding list item
+                      const resultItem = document.querySelector(`li[data-id="${point.id}"]`);
+                      if (resultItem) {
+                          resultItem.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                          resultItem.classList.add('highlighted');
+                          setTimeout(() => resultItem.classList.remove('highlighted'), 2000);
+                      }
+                  }
+              };
+
+              markers.push(marker);
+          }
+
+          setTimeout(() => {
+              addMarkersGradually(points, endIndex);
+          }, 10);
+      }
+
+      // Add this function to handle map bounds update
+      function updateMapBounds(points) {
+          if (points && points.length > 0) {
+              const bounds = new ZDC.LatLonBounds();
+              points.forEach(point => {
+                  bounds.extend(new ZDC.LatLon(point.latitude, point.longitude));
+              });
+              map.setLatLonBounds(bounds);
+          }
+      }
+
+      function updateMarkers() {
+          clearMarkers();
+          
+          let allPoints = [];
+          allResults.forEach(cluster => {
+              allPoints = allPoints.concat(cluster.points);
+          });
+
+          // Update map bounds before adding markers
+          updateMapBounds(allPoints);
+          
+          // Start gradual marker addition
+          addMarkersGradually(allPoints);
+      }
+
+      function debounceSearch(func, wait) {
+          return function executedFunction(...args) {
+              const later = () => {
+                  clearTimeout(debounceTimer);
+                  func(...args);
+              };
+              clearTimeout(debounceTimer);
+              debounceTimer = setTimeout(later, wait);
+          };
+      }
+
+      function displayResults() {
+          $('#resultsList').empty();
+          let displayedCount = 0;
+          let allPoints = [];
+
+          allResults.forEach(cluster => {
+              allPoints = allPoints.concat(cluster.points);
+          });
+
+          allPoints.slice(0, displayCount).forEach(point => {
+              const li = $('<li></li>').attr('data-id', point.id);
+              
+              li.click(function() {
+                  const latlon = new ZDC.LatLon(point.latitude, point.longitude);
+                  map.setCenter(latlon);
+                  map.setZoom(16); // Zoom in when clicking result
+
+                  // Find and trigger click on corresponding marker
+                  const marker = markers.find(m => 
+                      m.getLatLon().lat === point.latitude && 
+                      m.getLatLon().lon === point.longitude
+                  );
+                  if (marker) {
+                      marker.onclick();
+                  }
+              });
+
+              const namediv = $('<div></div>')
+                  .css('font-weight', 'bold')
+                  .text(`${point.name} ${point.branch || ''}`);
+              const addressdiv = $('<div></div>')
+                  .css({ 'color': '#666', 'font-size': '0.6em' })
+                  .text(`〒 ${point.postal || ''} ${point.address || ''}`);
+              const locationdiv = $('<div></div>')
+                  .css({ 'color': '#666', 'font-size': '0.6em' })
+                  .text(`緯度: ${point.latitude} 経度: ${point.longitude}`);
+
+              li.append(namediv, addressdiv, locationdiv);
+              $('#resultsList').append(li);
+              displayedCount++;
+          });
+
+          loading = false;
+          if (displayedCount >= totalResults) {
+              $(window).off('scroll');
+          }
+      }
+
+      $(document).ready(function() {
+          // Remove the auto-search/debounce code
+          
+          // Add Enter key handler for search input
+          $('#queryinput').on('keypress', function(e) {
+              if (e.which === 13) {  // Enter key code
+                  e.preventDefault();
+                  performSearch();
+              }
+          });
+
+          // Modify search button click handler
+          $('#searchBtn').click(performSearch);
+
+          // Separate search function
+          function performSearch() {
+              const query = $('#queryinput').val().trim();
+              if (query === '') {
+                  alert('Please enter a search query.');
+                  return;
+              }
+
+              $('#resultsList').empty();
+              allResults = [];
+              displayCount = 20;
+              totalResults = 0;
+              clearMarkers();
+              isMarkersLoading = false;  // Reset loading state
+
+              const currentLatLon = map.getLatLon();
+              
+              $.ajax({
+                  url: `/search?q=${encodeURIComponent(query)}&lat=${currentLatLon.lat}&lon=${currentLatLon.lon}&zoom=${currentZoom}`,
+                  method: 'GET',
+                  success: function(data) {
+                      if (!data || !data.data) {
+                          console.error('Invalid response data:', data);
+                          $('#resultsList').html('<li>Error: Invalid response from server</li>');
+                          return;
+                      }
+
+                      allResults = data.data;
+                      console.log('Total clusters:', allResults.length);
+                      
+                      // Calculate total points
+                      totalResults = allResults.reduce((sum, cluster) => sum + cluster.points.length, 0);
+                      console.log('Total points:', totalResults);
+                      
+                      $('#toggle').text(`▲Results (${totalResults})`).show();
+                      $('#results').show();
+                      
+                      if (totalResults === 0) {
+                          $('#resultsList').append('<li>No results found.</li>');
+                      } else {
+                          try {
+                              displayResults();
+                              setTimeout(() => {
+                                  updateMarkers();
+                              }, 100);
+                          } catch (e) {
+                              console.error('Error updating display:', e);
+                              console.error(e.stack);
+                              $('#resultsList').html('<li>Error displaying results. Please try again.</li>');
+                          }
+                      }
+                  },
+                  error: function(xhr, status, error) {
+                      console.error('Search error:', status, error);
+                      $('#resultsList').html('<li>Error fetching results. Please try again later.</li>');
+                  }
+              });
+          }
+
+          $('#results').scroll(function() {
+            if (!loading && 
+                $('#results').scrollTop() + $('#results').height() >= $('#resultsList').height() - 100) {
+                loading = true;
+                displayCount += 20;
+                console.log('Loading more... New display count:', displayCount); // Debug log
+                displayResults();
+            }
+          });
+
+          $('#toggle').click(function() {
+            if (resultsDiv.style.display === 'none') {
+              resultsDiv.style.display = 'block';
+              toggleBtn.text(`▼Results (${totalResults})`);
+            } else {
+              resultsDiv.style.display = 'none';
+              toggleBtn.text(`▲Results (${totalResults})`);
+            }
+          });
+
+          // Update the zoom change handler
+          ZDC.addListener(map, ZDC.MAP_ZOOM_CHANGED, function() {
+              currentZoom = map.getZoom();
+              saveMapState();
+              if (allResults.length > 0 && !isMarkersLoading) {
+                  updateMarkers();
+              }
+          });
+
+          // Add CSS for highlighted items
+          const style = document.createElement('style');
+          style.textContent = `
+              #resultsList li.highlighted {
+                  background-color: #fff3f3;
+                  transition: background-color 0.3s ease;
+              }
+              .marker-cluster {
+                  background-color: rgba(255, 0, 0, 0.6);
+                  border-radius: 50%;
+                  text-align: center;
+                  color: white;
+                  font-weight: bold;
+                  transition: all 0.3s ease;
+              }
+              .marker-cluster:hover {
+                  background-color: rgba(255, 0, 0, 0.8);
+                  transform: scale(1.1);
+              }
+          `;
+          document.head.appendChild(style);
+      });
+
+      // Handle page visibility changes
+      document.addEventListener('visibilitychange', function() {
+          if (!document.hidden && map) {
+              try {
+                  // Refresh map when page becomes visible again
+                  const latlon = map.getLatLon();
+                  map.setLatLon(latlon);
+                  map.setZoom(map.getZoom());
+              } catch (e) {
+                  console.error('Error refreshing map:', e);
+              }
+          }
+      });
+
+      window.onload = loadMap;
+  </script>
+</body>
+</html>
