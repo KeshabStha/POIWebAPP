@@ -1,0 +1,679 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Map Search App</title>
+  <script src="{{api_url}}"></script>
+  <!-- <script src="../static/markercluster-1.1.js"></script> -->
+  <script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
+  <style>
+    body, html {
+      margin: 0;
+      padding: 0;
+      height: 100%;
+      font-family: 'Roboto', sans-serif;
+      background-color: #f4f4f9;
+    }
+    main {
+      height: 100%;
+      width: 100%;
+      position: relative;
+    }
+    #Map {
+      height: 100%;
+      width: 100%;
+      position: absolute;
+      top: 0;
+      left: 0;
+    }
+    #results {
+      width: 25%;
+      max-width: 350px;
+      max-height: 95%;
+      overflow-y: auto;
+      padding: 15px;
+      box-sizing: border-box;
+      background-color: #fff;
+      box-shadow: 0 0 10px rgba(0,0,0,0.1);
+      position: absolute;
+      top: 35px;
+      right: 0px;
+      z-index: 2;
+      border-radius: 8px;
+      display: none;
+      transition: max-height 0.3s, width 0.3s;
+    }
+    #searchBox {
+      display: flex;
+      padding: 10px;
+      box-sizing: border-box;
+      position: absolute;
+      top: 0px;
+      left: 0px;
+      z-index: 2;
+      border-radius: 8px;
+    }
+    #queryinput {
+      flex-grow: 1;
+      padding: 10px;
+      margin-right: 5px;
+      border: 1px solid #ccc;
+      border-radius: 4px;
+      font-size: 16px;
+    }
+    #searchBtn {
+      padding: 10px;
+      background-color: #4CAF50;
+      color: white;
+      border: none;
+      border-radius: 4px;
+      cursor: pointer;
+      transition: background-color 0.3s;
+      font-size: 16px;
+    }
+    #searchBtn:hover {
+      background-color: #45a049;
+    }
+    #resultsList {
+      margin: 0;
+      padding: 0;
+      list-style: none;
+    }
+    #resultsList h2 {
+      text-align: center;
+    }
+    #resultsList li {
+      padding: 12px;
+      border-bottom: 1px solid #eee;
+      transition: all 0.3s ease;
+      cursor: pointer;
+    }
+    #resultsList li:hover {
+      background-color: #f8f9fa;
+    }
+    #resultsList li.active {
+      background-color: #e8f4ff;
+      border-left: 4px solid #007bff;
+    }
+    #toggle {
+      position: absolute;
+      top: 10px;
+      right: 0px;
+      width: fit-content;
+      padding: 5px 10px;
+      background-color: #4CAF50;
+      color: white;
+      border: none;
+      border-radius: 4px;
+      cursor: pointer;
+      display: none;
+      transition: background-color 0.3s;
+      z-index: 3;
+    }
+    #toggle:hover {
+      background-color: #45a049;
+    }
+    @media screen and (max-width: 768px) {
+      #results {
+        width: 100%;
+        max-height: 95vh;
+        top: 35px;
+        right: 0px;
+      }
+      #toggle {
+        top: 10px;
+        right: 10px;
+      }
+    }
+  </style>
+</head>
+<body>
+  <main>
+<div id="Map" style="width: 100%; height: 100%; font-size: large; font-weight: bold;"></div>
+    <div id="searchBox">
+      <input type="text" id="queryinput" placeholder="Search...">
+      <button id="searchBtn">Search</button>
+    </div>
+    <button id="toggle">▲Results (0)</button>
+    <div id="results">
+      <ul id="resultsList"></ul>      
+    </div>
+  </main>
+  <script type="text/javascript">
+    let map, markers = [];
+    let markerCluster = null;
+    let allPoints = [];  // Store all search results
+    let displayCount = 20;
+    let loading = false;
+    let center_lat, center_lon;
+    let currentZoom = 9;
+    let activeMarker = null;
+    let debounceTimer;
+    let isMarkersLoading = false;
+    const MARKER_BATCH_SIZE = 100;
+    const MARKER_BATCH_DELAY = 50;
+
+    let mapState;
+        mapState = JSON.parse(localStorage.getItem('mapState')) || {
+            lat: 35.6895,
+            lon: 139.6917,
+            zoom: 9
+        };
+        currentZoom = mapState.zoom;
+    
+
+      function loadMap() {
+        if (typeof ZDC === 'undefined') {
+            console.error("ZDC API failed to load.");
+            return;
+        }
+        try {
+            console.log(`Loading map at: ${mapState.lat}, ${mapState.lon}, zoom: ${mapState.zoom}`);
+            const latlon = new ZDC.LatLon(mapState.lat, mapState.lon);
+            map = new ZDC.Map(document.getElementById('Map'), {
+                zoom: mapState.zoom,
+                mapType: ZDC.MAPTYPE_HIGHRES_LV18,
+                latlon: latlon
+            });
+            ZDC.addListener(map, ZDC.MAP_CLICK, moveLatLon);
+
+            function moveLatLon() {
+                var latlon = map.getClickLatLon();
+                map.moveLatLon(latlon);
+                saveMapState();
+            };
+        map.addWidget(new ZDC.ScaleBar());
+        map.addWidget(new ZDC.Control({ pos: { left: 10, bottom: 20 }, close: true }));
+            function updateCenter() {
+            const latlon = map.getLatLon();
+            center_lat = latlon.lat;
+            center_lon = latlon.lon;
+            }
+            updateCenter();
+            function saveMapState() {
+                try {
+                    const latlon = map.getLatLon();
+                    const zoom = map.getZoom();
+                    center_lat = latlon.lat;
+                    center_lon = latlon.lon;
+                    mapState = {
+                        lat: latlon.lat,
+                        lon: latlon.lon,
+                        zoom: zoom
+                    };
+                    localStorage.setItem('mapState', JSON.stringify(mapState));
+                } catch (e) {
+                    console.error('Error saving map state:', e);
+                            }
+                        }
+                    } catch (e) {
+                        console.error('Error initializing map:', e);
+                    }
+                }
+
+    function clearMarkers() {
+        if (markers.length > 0) {
+            markers.forEach(marker => map.removeWidget(marker));
+            markers = [];
+        }
+        if (markerCluster) {
+            markerCluster.clearMarkers();
+            markerCluster = null;
+        }
+    }
+
+    function createCluster() {
+        if (markerCluster) {
+            markerCluster.clearMarkers();
+            markerCluster = null;
+        }
+
+        if (markers.length === 0) return;
+
+        try {
+            markerCluster = new ZDC.MarkerClusterer({
+                map: map,
+                markers: markers,
+                maxZoom: 17,
+                gridSize: 60,
+                minClusterSize: 2,
+                maxClusterSize: 100
+            });
+        } catch (e) {
+            console.error('Clustering error:', e);
+            markers.forEach(marker => {
+                map.addWidget(marker);
+            });
+        }
+    }
+
+    function calculateGridSize() {
+        const zoom = map.getZoom();
+        return Math.max(50, 200 / Math.pow(2, zoom - 5));
+    }
+
+    function addMarkersGradually(points, startIndex = 0) {
+        if (isMarkersLoading || startIndex >= points.length) {
+            if (markers.length > 0) {
+                createCluster();
+            }
+            isMarkersLoading = false;
+            return;
+        }
+
+        isMarkersLoading = true;
+        const endIndex = Math.min(startIndex + MARKER_BATCH_SIZE, points.length);
+        
+        for (let i = startIndex; i < endIndex; i++) {
+            const point = points[i];
+            const marker = new ZDC.Marker(
+                new ZDC.LatLon(point.latitude, point.longitude),
+                {
+                    label: point.name,
+                    labelColor: "#000000",
+                    fontSize: 12,
+                    opacity: 0.8,
+                    cursor: 'pointer'  // Add pointer cursor
+                }
+            );
+            marker.onclick = function() {
+                if (activeMarker === marker) {
+                    marker.setOptions({ 
+                        labelColor: "#000000",
+                        color: "#0000ff"
+                    });
+                    activeMarker = null;
+                } else {
+                    if (activeMarker) {
+                        activeMarker.setOptions({ 
+                            labelColor: "#000000",
+                            color: "#0000ff"
+                        });
+                    }
+                    marker.setOptions({ 
+                        labelColor: "#ff0000",
+                        color: "#ff0000"
+                    });
+                    activeMarker = marker;
+                    const resultItem = document.querySelector(`li[data-id="${point.id}"]`);
+                    if (resultItem) {
+                        resultItem.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                        resultItem.classList.add('highlighted');
+                        setTimeout(() => resultItem.classList.remove('highlighted'), 2000);
+                    }
+                }
+            };
+            markers.push(marker);
+        }
+        setTimeout(() => {
+            addMarkersGradually(points, endIndex);
+        }, 10);
+    }
+
+      function updateMapBounds(points) {
+          if (points && points.length > 0) {
+              const bounds = new ZDC.LatLonBounds();
+              points.forEach(point => {
+                  bounds.extend(new ZDC.LatLon(point.latitude, point.longitude));
+              });
+              map.setLatLonBounds(bounds);
+          }
+      }
+
+      function updateMarkers() {
+          clearMarkers();
+          
+          let allPoints = [];
+          allPoints = allPoints.concat(allPoints);
+
+          updateMapBounds(allPoints);
+          
+          addMarkersGradually(allPoints);
+      }
+
+      function debounce(func, wait) {
+          let timeout;
+          return function() {
+              const context = this;
+              const args = arguments;
+              clearTimeout(timeout);
+              timeout = setTimeout(() => {
+                  func.apply(context, args);
+              }, wait);
+          };
+      }
+
+      function moveToLocation(lat, lon) {
+          const latlon = new ZDC.LatLon(lat, lon);
+          map.moveLatLon(latlon);  // Use moveLatLon instead of setLatLon
+          map.setZoom(7);
+      }
+
+      function updateVisibleMarkers() {
+          clearMarkers();
+          
+          const bounds = map.getLatLonBox();
+          
+          // Filter points within current bounds
+          const visiblePoints = allPoints.filter(point => {
+              return point.latitude >= bounds.min.lat &&
+                     point.latitude <= bounds.max.lat &&
+                     point.longitude >= bounds.min.lon &&
+                     point.longitude <= bounds.max.lon;
+          });
+
+          // Add markers for visible points
+          visiblePoints.forEach(point => {
+              const marker = new ZDC.Marker(
+                  new ZDC.LatLon(point.latitude, point.longitude),
+                  { color: ZDC.MARKER_COLOR_ID_BLUE_S }
+              );
+
+              markers.push(marker);
+              map.addWidget(marker);
+
+              ZDC.addListener(marker, 'click', function() {
+                  if (activeMarker) {
+                      activeMarker.setOptions({
+                          color: ZDC.MARKER_COLOR_ID_BLUE_S
+                      });
+                  }
+
+                  marker.setOptions({
+                      color: ZDC.MARKER_COLOR_ID_RED_S
+                  });
+                  activeMarker = marker;
+
+                  moveToLocation(point.latitude, point.longitude);
+                  
+                  const listItem = $(`li[data-id="${point.id}"]`);
+                  if (listItem.length) {
+                      $('#resultsList li').removeClass('active');
+                      listItem.addClass('active');
+                      scrollToListItem(listItem);
+                  }
+              });
+          });
+
+          // Create cluster if we have enough markers
+          if (markers.length > 1) {
+              try {
+                  // Create a cluster object
+                  const cluster = new ZDC.Cluster({
+                      map: map,
+                      markers: markers,
+                      gridSize: 60,
+                      maxZoom: 17,
+                      minClusterSize: 2
+                  });
+                  
+                  // Add the cluster to the map
+                  cluster.addMarkers(markers);
+                  markerCluster = cluster;
+              } catch (e) {
+                  console.error('Clustering error:', e);
+                  // Markers are already added to map as fallback
+              }
+          }
+      }
+
+      function performSearch() {
+          const query = $('#queryinput').val().trim();
+          if (!query) return;
+
+          $('#resultsList').empty();
+          allPoints = [];
+          displayCount = 20;
+          clearMarkers();
+          
+          const center = map.getLatLon();
+          
+          $.ajax({
+              url: `/search?q=${encodeURIComponent(query)}&` + 
+                   `centerLat=${center.lat}&centerLon=${center.lon}`,
+              method: 'GET',
+              success: function(data) {
+                  if (!data || !data.data) {
+                      $('#resultsList').html('<li>Error: Invalid response from server</li>');
+                      return;
+                  }
+
+                  allPoints = data.data;
+                  
+                  if (allPoints.length === 0) {
+                      $('#resultsList').append('<li>No results found.</li>');
+                      $('#toggle').text(`▲Results (0)`).show();
+                  } else {
+                      displayResults();
+                      $('#toggle').text(`▲Results (${allPoints.length})`).show();
+                  }
+                  $('#results').show();
+                  saveMapState();  // Save state after successful search
+              },
+              error: function(xhr, status, error) {
+                  console.error('Search error:', error);
+                  $('#resultsList').html('<li>Error fetching results. Please try again later.</li>');
+              }
+          });
+      }
+
+      // Add map event listeners with debouncing
+      ZDC.addListener(map, ZDC.MAP_MOVE_END, function() {
+          saveMapState();  // Save state immediately after map movement
+          if (allPoints.length > 0) {
+              updateVisibleMarkers();
+          }
+      });
+
+      ZDC.addListener(map, ZDC.MAP_ZOOM_CHANGED, function() {
+          saveMapState();  // Save state immediately after zoom change
+          if (allPoints.length > 0) {
+              updateVisibleMarkers();
+          }
+      });
+
+      $(document).ready(function() {
+          // Remove the auto-search/debounce code
+          
+          // Add Enter key handler for search input
+          $('#queryinput').on('keypress', function(e) {
+              if (e.which === 13) {  // Enter key code
+                  e.preventDefault();
+                  performSearch();
+              }
+          });
+
+          // Modify search button click handler
+          $('#searchBtn').click(performSearch);
+
+          $('#results').scroll(function() {
+              if (!loading && 
+                  $('#results').scrollTop() + $('#results').height() >= $('#resultsList').height() - 100) {
+                  loading = true;
+                  displayCount += 20;
+                  // console.log('Loading more... New display count:', displayCount); // Debug log
+                  displayResults();
+              }
+          });
+
+          $('#toggle').click(function() {
+              const resultsDiv = document.getElementById('results');
+              const toggleBtn = $(this);
+              if (resultsDiv.style.display === 'none') {
+                  resultsDiv.style.display = 'block';
+                  toggleBtn.text(`▲Results (${allPoints.length})`);
+              } else {
+                  resultsDiv.style.display = 'none';
+                  toggleBtn.text(`▼Results (${allPoints.length})`);
+              }
+          });
+
+          // Update the zoom change handler
+          ZDC.addListener(map, ZDC.MAP_ZOOM_CHANGED, function() {
+              currentZoom = map.getZoom();
+              saveMapState();
+              if (allPoints.length > 0 && !isMarkersLoading) {
+                  updateMarkers();
+              }
+          });
+
+          // Add CSS for highlighted items
+          const style = document.createElement('style');
+          style.textContent = `
+              #resultsList li.highlighted {
+                  background-color: #fff3f3;
+                  transition: background-color 0.3s ease;
+              }
+              .marker-cluster {
+                  background-color: rgba(255, 0, 0, 0.6);
+                  border-radius: 50%;
+                  text-align: center;
+                  color: white;
+                  font-weight: bold;
+                  transition: all 0.3s ease;
+              }
+              .marker-cluster:hover {
+                  background-color: rgba(255, 0, 0, 0.8);
+                  transform: scale(1.1);
+              }
+          `;
+          document.head.appendChild(style);
+
+          // Add CSS for distance styling
+          const distanceStyle = document.createElement('style');
+          distanceStyle.textContent = `
+              #resultsList li {
+                  padding: 12px;
+                  border-bottom: 1px solid #eee;
+                  transition: background-color 0.2s;
+              }
+              #resultsList li:hover {
+                  background-color: #f8f9fa;
+              }
+          `;
+          document.head.appendChild(distanceStyle);
+
+          // Add map move end listener to refresh results
+          ZDC.addListener(map, ZDC.MAP_MOVE_END, function() {
+              if (allPoints.length > 0) {
+                  updateVisibleMarkers();
+              }
+          });
+
+          // Load saved state
+          loadMapState();
+      });
+
+      // Handle page visibility changes
+      document.addEventListener('visibilitychange', function() {
+          if (!document.hidden && map) {
+              try {
+                  refreshMap();
+              } catch (e) {
+                  console.error('Error refreshing map:', e);
+              }
+          }
+      });
+
+      window.onload = loadMap;
+
+      function scrollToListItem(element) {
+          if (element && element.length) {
+              const container = document.getElementById('results');
+              const item = element[0];
+              const itemTop = item.offsetTop;
+              const itemHeight = item.offsetHeight;
+              const containerHeight = container.offsetHeight;
+              
+              container.scrollTo({
+                  top: itemTop - (containerHeight - itemHeight) / 2,
+                  behavior: 'smooth'
+              });
+          }
+      }
+      function refreshMap() {
+          if (map) {
+              const currentLatLon = map.getLatLon();
+              map.moveLatLon(currentLatLon);
+          }
+      }
+
+      function displayResults() {
+          $('#resultsList').empty();
+
+          // Display all points in list, sorted by distance
+          allPoints.slice(0, displayCount).forEach(point => {
+              const li = $('<li></li>')
+                  .attr('data-id', point.id)
+                  .attr('data-lat', point.latitude)
+                  .attr('data-lon', point.longitude);
+              
+              li.click(function() {
+                  const lat = parseFloat($(this).attr('data-lat'));
+                  const lon = parseFloat($(this).attr('data-lon'));
+                  moveToLocation(lat, lon);
+                  
+                  $('#resultsList li').removeClass('active');
+                  $(this).addClass('active');
+              });
+
+              const namediv = $('<div></div>')
+                  .css('font-weight', 'bold')
+                  .text(`${point.name} ${point.branch || ''}`);
+              
+              const addressdiv = $('<div></div>')
+                  .css({ 'color': '#666', 'font-size': '0.9em' })
+                  .text(`〒${point.postal || ''} ${point.address || ''}`);
+
+              const coordsDiv = $('<div></div>')
+                  .css({ 'color': '#007bff', 'font-size': '0.8em' })
+                  .text(`${point.latitude}, ${point.longitude}`);
+
+              const distancediv = $('<div></div>')
+                  .css({ 'color': '#007bff', 'font-size': '0.8em' })
+                  .text(`距離: ${point.distance}`);
+
+              li.append(namediv, addressdiv, coordsDiv, distancediv);
+              $('#resultsList').append(li);
+          });
+
+          // Initial marker display
+          updateVisibleMarkers();
+
+          // Show results count
+          if (allPoints.length > 0) {
+              $('#toggle').text(`▲Results (${allPoints.length})`).show();
+              $('#results').show();
+          } else {
+              $('#toggle').text(`▲Results (0)`).show();
+              $('#resultsList').append('<li>No results found.</li>');
+              $('#results').show();
+          }
+
+          loading = false;
+      }
+
+      // Add functions to save and load map state
+      function saveMapState() {
+          const center = map.getLatLon();
+          const zoom = map.getZoom();
+          const state = {
+              lat: center.lat,
+              lon: center.lon,
+              zoom: zoom
+          };
+          localStorage.setItem('mapState', JSON.stringify(state));
+      }
+
+      function loadMapState() {
+          const savedState = localStorage.getItem('mapState');
+          if (savedState) {
+              const state = JSON.parse(savedState);
+              map.setLatLon(new ZDC.LatLon(state.lat, state.lon));
+              map.setZoom(state.zoom);
+          }
+      }
+  </script>
+</body>
+</html>
