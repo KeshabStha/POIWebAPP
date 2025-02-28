@@ -1,0 +1,442 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Search with Infinite Scroll</title>
+<script src="{{api_url}}"></script>
+<script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
+<script src="https://code.jquery.com/ui/1.13.2/jquery-ui.min.js"></script>
+<link rel="stylesheet" href="https://code.jquery.com/ui/1.13.2/themes/base/jquery-ui.css">
+<script src="static/markercluster-1.1.js"></script>
+<style>
+  body, html {
+    height: 100%;
+    margin: 0;
+    font-family: Arial, sans-serif;
+  }
+
+  main {
+    display: flex;
+    height: 100%;
+  }
+
+  #map {
+    flex-grow: 1;
+    transition: width 0.4s;
+  }
+
+  #toogleBtn {
+    position: absolute;
+    top: 10px;
+    right: 10px;
+    z-index: 1001;
+    padding: 10px 15px;
+    background-color: #007bff;
+    color: white;
+    border: none;
+    border-radius: 5px;
+    cursor: pointer;
+    opacity: 0.6;
+    transition: all 0.5s ease-in-out;
+  }
+
+  #toogleBtn:hover {
+    opacity: 1;
+    background-color: #0056b3;
+  }
+
+  #search_and_result {
+    display: block;
+    width: 0;
+    padding-top: 50px;
+    transition: width 0.4s ease-in-out;
+    background-color: #f8f9fa;
+    box-shadow: 0 0 10px rgba(0, 0, 0, 0.1);
+    overflow: hidden;
+    z-index: 1000;
+  }
+
+  #search_and_result button {
+    width: calc(100% - 20px);
+    margin: 10px;
+    margin-top: -10px;
+    padding: 10px;
+    border: 1px solid #ced4da;
+    border-radius: 5px;
+  }
+  #searchInput {
+    width: calc(100% - 42px);
+    margin: 10px;
+    padding: 10px;
+    border: 1px solid #ced4da;
+    border-radius: 5px;
+  }
+  #search_and_result button {
+    background-color: #4ddf4d;
+    color: white;
+    cursor: pointer;
+    transition: all 0.5s ease-in-out;
+  }
+
+  #search_and_result button:hover {
+    background-color: #0056b3;
+  }
+
+  #results {
+    padding: 10px;
+    overflow-y: auto;
+    height: calc(100% - 80px);
+  }
+
+  #resultsList {
+    list-style: none;
+    padding: 0;
+  }
+
+  #resultsList li {
+    padding: 10px;
+    border-bottom: 1px solid #ced4da;
+    cursor: pointer;
+  }
+
+  #resultsList li:hover {
+    background-color: #c2c6cb;
+    border: #c9c4c4 outset 2px;
+    border-left : #939393 outset 4px;
+    border-radius: 4px;
+
+  }
+
+  .loading {
+    text-align: center;
+    padding: 10px;
+  }
+
+  .cluster-marker {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background-color: rgba(66, 133, 244, 0.8);
+    border: 2px solid #fff;
+    border-radius: 50%;
+    color: white;
+    font-weight: bold;
+    box-shadow: 0 2px 4px rgba(0,0,0,0.3);
+    transition: all 0.3s ease;
+  }
+
+  .cluster-marker:hover {
+    transform: scale(1.1);
+    background-color: rgba(66, 133, 244, 0.9);
+  }
+</style>
+</head>
+<body onload="loadMap()">
+<main>
+    <div id="map" style="height: 100%; width: 100%;"></div>
+    <button id="toogleBtn" onclick="toogleFunc()">◀</button>
+    <section id="search_and_result">
+        <input type="text" id="searchInput" placeholder="Search for a place">
+        <button id="searchBtn">Search</button>
+        <div id="results">
+        <p id="totalResults"></p>
+        <ul id="resultsList"></ul>
+        <div class="loading" style="display: none;">Loading...</div>
+        </div>
+    </section>
+</main>
+<script>
+  let map, marker;
+  let markers = [];  // Define markers globally
+  let mapState = JSON.parse(localStorage.getItem('mapState')) || {
+    centerlat: 35.6895,
+    centerlon: 139.6999,
+    zoom: 15
+  };
+  const toogleBtn = document.getElementById('toogleBtn');
+  const searchBox = document.getElementById('search_and_result');
+  let showResults = false;   
+
+  function loadMap() {
+    if (typeof ZDC === 'undefined') {
+    console.error("ZDC API failed to load.");
+    alert("地図の読み込みに失敗しました。ページを更新してください。");
+    return;
+    }
+
+    try {
+    // console.log(`Loading map at: ${mapState.centerlat}, ${mapState.centerlon}, zoom: ${mapState.zoom}`);
+    
+    // Initialize map with stored position and zoom
+    const latlon = new ZDC.LatLon(mapState.centerlat, mapState.centerlon);
+    map = new ZDC.Map(document.getElementById('map'), {
+      zoom: mapState.zoom,
+      mapType: ZDC.MAPTYPE_HIGHRES_LV18,
+      latlon: latlon
+    });
+
+    clearMarkers();
+    updateMarkers();
+    
+    // Save map state whenever it changes
+    function saveMapState() {
+      const latlon = map.getLatLon();
+      mapState = {
+      centerlat: latlon.lat,
+      centerlon: latlon.lon,
+      zoom: map.getZoom()
+      };
+      // console.log(`latitude: ${latlon.lat}, longitude: ${latlon.lon}, zoom: ${map.getZoom()}`);
+      localStorage.setItem('mapState', JSON.stringify(mapState));
+    }
+
+    // Map event listeners
+    ZDC.addListener(map, ZDC.MAP_CLICK, function() {
+      const latlon = map.getClickLatLon();
+      map.moveLatLon(latlon);
+      saveMapState();
+      updateMarkers();
+    });
+
+    ZDC.addListener(map, ZDC.MAP_DRAG_END, function() {
+      saveMapState();
+      updateMarkers();
+    });
+
+    ZDC.addListener(map, ZDC.MAP_CHG_ZOOM, function() {
+      saveMapState();
+      updateMarkers();
+    });
+
+    map.addWidget(new ZDC.ScaleBar());
+    map.addWidget(new ZDC.Control({ pos: { left: 10, bottom: 30 }, close: true }));
+    } catch (e) {
+    console.error('Error initializing map:', e);
+    alert("地図の初期化に失敗しました。ページを更新してください。");
+    }
+  }
+  function toogleFunc() {
+    showResults = !showResults;
+    searchBox.style.display = showResults ? 'block' : 'none';
+    searchBox.style.width = showResults ? '30%' : '0%';
+    toogleBtn.textContent = showResults ? '▶' : '◀';
+  }
+
+  $(document).ready(function() {
+  let allResults = [], totalResults = 0, loading = false, offset = 0, limit = 100, currentQuery = '';
+  let searchHistory = JSON.parse(localStorage.getItem('searchHistory')) || [];
+
+
+  $("#searchInput").autocomplete({
+    source: term => searchHistory.filter(q => q.toLowerCase().includes(term.term.toLowerCase())),
+    minLength: 1
+  });
+
+  function updateSearchHistory(query) {
+    if (!searchHistory.includes(query)) {
+    searchHistory.unshift(query);
+    if (searchHistory.length > 5) searchHistory.pop();
+    localStorage.setItem('searchHistory', JSON.stringify(searchHistory));
+    }
+  }
+
+  function performSearch() {
+    const start = performance.now();
+    const query = $('#searchInput').val().trim();
+    if (!query) return;
+    
+    clearMarkers();
+    currentQuery = query;
+    offset = 0;
+    allResults = [];
+    $('#resultsList').empty();
+    updateSearchHistory(query);
+
+    const mapCenter = map.getLatLon();
+    // console.log('mapCenter:', mapCenter);
+    $.get(`/search?q=${encodeURIComponent(query)}&offset=${offset}&limit=${limit}&lat=${mapCenter.lat}&lon=${mapCenter.lon}`, data => {
+    totalResults = data.total;
+    $('#totalResults').text(`Found ${totalResults} results`);
+    // console.log('Time taken to search: ', performance.now() - start);
+    displayNewResults(data.results);
+    // console.log('Time taken to display: ', performance.now() - start);
+    updateMarkers();
+    // console.log('Time taken to search, display, updateMarkers: ', performance.now() - start);
+    offset += data.results.length;
+    }).fail(() => $('#resultsList').html('<li>Error performing search</li>'));
+  }
+
+  function displayNewResults(results) {
+
+    // const display_start = performance.now();
+    results.forEach(result => {
+    const li = $('<li></li>')
+      .attr('data-id', result.id)  // Add this to help with marker highlighting
+      .append(
+        $('<div></div>').css('font-weight', 'bold').text(`${result.name} ${result.branch || ''}`),
+        result.address && result.postal ? 
+          $('<div></div>').css({color: '#666', fontSize: '0.7em'})
+            .text(`〒 ${result.postal} ${result.address}`) : ''
+      ).click(() => {
+        map.moveLatLon(new ZDC.LatLon(result.latitude, result.longitude));
+        updateMarkers();
+        // Add this: Show search panel if hidden
+        if (!showResults) {
+          toogleFunc();
+        }
+      });
+    $('#resultsList').append(li);
+    });
+    // console.log('Time taken to display: ', performance.now() - display_start);
+  }
+
+  $('#searchBtn').click(performSearch);
+  $('#searchInput').keypress(e => { if (e.which == 13) performSearch(); });
+
+  $('#results').scroll(function() {
+    if ($(this).scrollTop() + $(this).height() >= $(this)[0].scrollHeight - 100 && !loading && offset < totalResults) {
+    loading = true;
+    $('.loading').show();
+    $.get(`/moreResults?offset=${offset}&limit=${limit}`, moreData => {
+      displayNewResults(moreData);
+      offset += moreData.length;
+    }).always(() => {
+      loading = false;
+      $('.loading').hide();
+    });
+    }
+  });
+  });
+
+function updateMarkers() {
+    const bounds = map.getLatLonBox();
+    const zoom = map.getZoom();
+    
+    // console.log('Current zoom level:', zoom); // Debug log
+    
+    $.ajax({
+        url: '/getMarkers',
+        data: {
+            minLat: bounds.min.lat,
+            maxLat: bounds.max.lat,
+            minLon: bounds.min.lon,
+            maxLon: bounds.max.lon,
+            zoom: zoom
+        },
+        success: function(data) {
+            clearMarkers();
+            
+            if (data.clusters && data.clusters.length > 0) {
+                // console.log('Received clusters:', data.clusters.length); // Debug log
+                
+                data.clusters.forEach(cluster => {
+                    const position = new ZDC.LatLon(cluster.center.Latitude, cluster.center.Longitude);
+                    
+                    if (cluster.count === 1 && zoom >= 17) {
+                        // Single marker
+                        const marker = new ZDC.Marker(
+                            position,
+                            { color: ZDC.MARKER_COLOR_ID_RED_S }
+                        );
+                        
+                        ZDC.addListener(marker, ZDC.MARKER_CLICK, function() {
+                            showClusterPoints([cluster.points[0]]);
+                        });
+                        
+                        markers.push(marker);
+                        map.addWidget(marker);
+                    } else {
+                        // Cluster marker
+                        const clusterMarker = createClusterMarker(position, cluster.count);
+                        
+                        ZDC.addListener(clusterMarker, ZDC.MARKER_CLICK, function() {
+                            if (cluster.count > 2 && zoom < 21) {
+                                map.moveLatLon(position);
+                                map.setZoom(zoom + 2);
+                                updateMarkers();
+                            } else {
+                                showClusterPoints(cluster.points);
+                            }
+                        });
+                        
+                        markers.push(clusterMarker);
+                        map.addWidget(clusterMarker);
+                    }
+                });
+                
+                console.log('Added markers:', markers.length); // Debug log
+            }
+        },
+        error: function(error) {
+            console.error('Error fetching markers:', error);
+        }
+    });
+}
+
+function createClusterMarker(position, count) {
+    // Calculate base size and styling based on count
+    let baseSize;
+    let icon;
+    
+    if (count < 10) {
+        icon = 'icon1.png';
+    } else {
+        icon = 'icon2.png';
+    }
+    // Format count for display
+    const displayCount = count > 999 ? `${(count/1000).toFixed(1)}k` : count;
+
+    // Create marker with label
+    const marker = new ZDC.Marker(position, {
+        icon: icon,
+        label: displayCount.toString(),
+        labelColor: '#FFFFFF',
+        fontSize: '14px',
+        fontWeight: 'bold',
+        width: baseSize,
+        height: baseSize
+    });
+
+    return marker;
+}
+
+function showClusterPoints(points) {
+    // Check if points exists or not
+    if(points.length > 0){    
+    // Display points in the result list
+    points.forEach(point => {
+        const li = $('<li></li>')
+            .attr('data-id', point.ID)
+            .append(
+                $('<div></div>').css('font-weight', 'bold').text(`${point.Name} ${point.Branch || ''}`),
+                point.Address && point.Postal ? 
+                    $('<div></div>').css({color: '#666', fontSize: '0.7em'})
+                        .text(`〒 ${point.Postal} ${point.Address}`) : ''
+            ).click(() => {
+                map.moveLatLon(new ZDC.LatLon(point.Latitude, point.Longitude));
+                if (!showResults) {
+                    toogleFunc();
+                }
+            });
+        $('#SelectedPoints').append(li);
+    });
+    
+    // Show the results panel if it's hidden
+        if (!showResults) {
+            toogleFunc();
+        }
+    }
+}
+
+function clearMarkers() {
+    if (markers.length > 0) {
+        markers.forEach(marker => {
+            map.removeWidget(marker);
+        });
+        markers = [];
+    }
+}
+</script>
+</body>
+</html>
